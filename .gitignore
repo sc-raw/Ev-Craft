@@ -1,0 +1,7 @@
+/build/
+/build-mingw/
+CMakeUserPresets.json
+*.user
+*.pro.user
+.vscode/
+.idea/
