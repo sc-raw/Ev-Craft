@@ -9,6 +9,12 @@
 #include <QListWidget>
 #include <QMenuBar>
 #include <QMessageBox>
+#include <QMediaPlayer>
+#include <QAudioOutput>
+#include <QVideoWidget>
+#include <QStackedLayout>
+#include <QSignalBlocker>
+#include <QUrl>
 #include <QPushButton>
 #include <QSlider>
 #include <QSpinBox>
@@ -17,6 +23,7 @@
 #include <QVBoxLayout>
 #include <QHBoxLayout>
 #include <QWidget>
+#include <limits>
 
 MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent)
 {
@@ -27,7 +34,7 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent)
     createMenus();
     createToolbars();
     createDocks();
-    statusBar()->showMessage(QStringLiteral("Listo · motor multimedia pendiente de integración"));
+    statusBar()->showMessage(QStringLiteral("Listo · Qt Multimedia"));
 }
 
 void MainWindow::createMenus()
@@ -44,7 +51,7 @@ void MainWindow::createMenus()
     QMenu *help = menuBar()->addMenu(QStringLiteral("Ayuda"));
     help->addAction(QStringLiteral("Acerca de EV"), this, [this] {
         QMessageBox::about(this, QStringLiteral("Acerca de EV"),
-                           QStringLiteral("EV 0.1.0\nInterfaz inicial. Reproducción y procesamiento multimedia aún no implementados."));
+                           QStringLiteral("EV 0.1.1\nReproducción multimedia básica con Qt Multimedia."));
     });
 }
 
@@ -115,32 +122,78 @@ void MainWindow::createDocks()
     previewLayout->setContentsMargins(8, 8, 8, 8);
     auto *canvas = new QWidget(preview);
     canvas->setMinimumSize(480, 270);
-    canvas->setStyleSheet(QStringLiteral("background:#08090b; border:1px solid #343840;"));
-    auto *canvasLayout = new QVBoxLayout(canvas);
-    m_previewStatus = new QLabel(QStringLiteral("Vista previa\n\nEl motor de reproducción de vídeo se incorporará en una etapa posterior."), canvas);
+    auto *canvasLayout = new QStackedLayout(canvas);
+    canvasLayout->setStackingMode(QStackedLayout::StackAll);
+    m_videoWidget = new QVideoWidget(canvas);
+    m_videoWidget->setStyleSheet(QStringLiteral("background:#08090b; border:1px solid #343840;"));
+    canvasLayout->addWidget(m_videoWidget);
+    m_previewStatus = new QLabel(QStringLiteral("Selecciona un archivo multimedia para reproducirlo."), canvas);
     m_previewStatus->setAlignment(Qt::AlignCenter);
-    m_previewStatus->setStyleSheet(QStringLiteral("color:#aeb4bf; border:0;"));
+    m_previewStatus->setWordWrap(true);
+    m_previewStatus->setStyleSheet(QStringLiteral("color:#aeb4bf; background:transparent; border:0; padding:20px;"));
     canvasLayout->addWidget(m_previewStatus);
     previewLayout->addWidget(canvas, 1);
+
+    m_player = new QMediaPlayer(this);
+    auto *audioOutput = new QAudioOutput(this);
+    audioOutput->setVolume(0.8);
+    m_player->setAudioOutput(audioOutput);
+    m_player->setVideoOutput(m_videoWidget);
+
     auto *transport = new QHBoxLayout;
-    auto *begin = new QPushButton(QStringLiteral("|◀"), preview);
-    auto *play = new QPushButton(QStringLiteral("▶"), preview);
-    auto *end = new QPushButton(QStringLiteral("▶|"), preview);
-    for (QPushButton *button : {begin, play, end}) {
-        button->setEnabled(false);
-        button->setToolTip(QStringLiteral("Disponible cuando se integre el motor multimedia"));
-    }
+    auto *begin = new QPushButton(QStringLiteral("⏮"), preview);
+    begin->setToolTip(QStringLiteral("Volver al inicio del archivo"));
+    m_playPauseButton = new QPushButton(QStringLiteral("▶ / ⏸"), preview);
+    m_playPauseButton->setToolTip(QStringLiteral("Reproducir o pausar"));
+    auto *stop = new QPushButton(QStringLiteral("⏹"), preview);
+    stop->setToolTip(QStringLiteral("Detener reproducción"));
+    begin->setEnabled(false);
+    m_playPauseButton->setEnabled(false);
+    stop->setEnabled(false);
     transport->addStretch();
     transport->addWidget(begin);
-    transport->addWidget(play);
-    transport->addWidget(end);
+    transport->addWidget(m_playPauseButton);
+    transport->addWidget(stop);
+    m_positionLabel = new QLabel(QStringLiteral("00:00 / 00:00"), preview);
+    transport->addWidget(m_positionLabel);
     transport->addStretch();
-    auto *position = new QSlider(Qt::Horizontal, preview);
-    position->setRange(0, 0);
-    position->setEnabled(false);
+    m_positionSlider = new QSlider(Qt::Horizontal, preview);
+    m_positionSlider->setRange(0, 0);
+    m_positionSlider->setEnabled(false);
     previewLayout->addLayout(transport);
-    previewLayout->addWidget(position);
+    previewLayout->addWidget(m_positionSlider);
     setCentralWidget(preview);
+
+    connect(begin, &QPushButton::clicked, m_player, [this] { m_player->setPosition(0); });
+    connect(m_playPauseButton, &QPushButton::clicked, m_player, [this] {
+        if (m_player->playbackState() == QMediaPlayer::PlayingState)
+            m_player->pause();
+        else
+            m_player->play();
+    });
+    connect(stop, &QPushButton::clicked, m_player, &QMediaPlayer::stop);
+    connect(m_positionSlider, &QSlider::sliderMoved, m_player, [this](int value) { m_player->setPosition(value); });
+    connect(m_player, &QMediaPlayer::positionChanged, this, &MainWindow::updatePlaybackPosition);
+    connect(m_player, &QMediaPlayer::durationChanged, this, &MainWindow::updateMediaDuration);
+    connect(m_player, &QMediaPlayer::playbackStateChanged, this, &MainWindow::updatePlaybackState);
+    connect(m_player, &QMediaPlayer::hasVideoChanged, this, [this](bool hasVideo) {
+        if (hasVideo)
+            m_previewStatus->hide();
+        else if (m_player->source().isValid()) {
+            m_previewStatus->setText(QStringLiteral("Reproducción de audio · sin vídeo"));
+            m_previewStatus->show();
+        }
+    });
+    connect(m_player, &QMediaPlayer::mediaStatusChanged, this, [this](QMediaPlayer::MediaStatus status) {
+        if ((status == QMediaPlayer::LoadedMedia || status == QMediaPlayer::BufferedMedia)
+            && !m_player->hasVideo()) {
+            m_previewStatus->setText(QStringLiteral("Archivo de audio cargado · sin vídeo"));
+            m_previewStatus->show();
+        }
+    });
+    connect(m_player, &QMediaPlayer::errorOccurred, this, [this](QMediaPlayer::Error, const QString &) {
+        showPlaybackError();
+    });
 
     auto *timelineDock = new QDockWidget(QStringLiteral("Línea de tiempo"), this);
     timelineDock->setObjectName(QStringLiteral("TimelineDock"));
@@ -178,7 +231,7 @@ void MainWindow::addSelectedToTimeline()
     const QStringList audioExtensions{QStringLiteral("wav"), QStringLiteral("mp3"), QStringLiteral("aac"),
                                       QStringLiteral("flac"), QStringLiteral("ogg"), QStringLiteral("m4a")};
     const bool audio = audioExtensions.contains(suffix);
-    m_timeline->addClip(item->text(), audio);
+    m_timeline->addClip(item->text(), path, audio);
     statusBar()->showMessage(QStringLiteral("Clip visual añadido a la pista %1").arg(audio ? QStringLiteral("de audio") : QStringLiteral("de vídeo")), 3500);
 }
 
@@ -193,10 +246,69 @@ void MainWindow::updateMediaProperties()
     const QString path = item->data(Qt::UserRole).toString();
     m_propertyName->setText(item->text());
     m_propertyType->setText(QStringLiteral("Archivo · %1").arg(QFileInfo(path).suffix().toUpper()));
+    loadMedia(path, item->text());
 }
 
-void MainWindow::setClipProperties(const QString &name, const QString &trackType)
+void MainWindow::setClipProperties(const QString &name, const QString &sourcePath, const QString &trackType)
 {
     m_propertyName->setText(name);
     m_propertyType->setText(QStringLiteral("Clip de %1 · duración pendiente de análisis").arg(trackType));
+    loadMedia(sourcePath, name);
+}
+
+void MainWindow::loadMedia(const QString &sourcePath, const QString &displayName)
+{
+    m_currentMediaName = displayName;
+    m_previewStatus->setText(QStringLiteral("Cargando: %1").arg(displayName));
+    m_previewStatus->show();
+    m_positionSlider->setEnabled(false);
+    m_positionSlider->setRange(0, 0);
+    m_positionLabel->setText(QStringLiteral("00:00 / 00:00"));
+    m_player->setSource(QUrl::fromLocalFile(sourcePath));
+    m_playPauseButton->setEnabled(true);
+    statusBar()->showMessage(QStringLiteral("Cargando %1…").arg(displayName));
+}
+
+void MainWindow::updatePlaybackPosition(qint64 position)
+{
+    if (!m_positionSlider->isSliderDown()) {
+        const QSignalBlocker blocker(m_positionSlider);
+        m_positionSlider->setValue(static_cast<int>(qMin(position, qint64(m_positionSlider->maximum()))));
+    }
+    const qint64 duration = m_player->duration();
+    const auto formatTime = [](qint64 milliseconds) {
+        const qint64 seconds = milliseconds / 1000;
+        return seconds >= 3600
+            ? QStringLiteral("%1:%2:%3").arg(seconds / 3600, 2, 10, QLatin1Char('0')).arg((seconds / 60) % 60, 2, 10, QLatin1Char('0')).arg(seconds % 60, 2, 10, QLatin1Char('0'))
+            : QStringLiteral("%1:%2").arg(seconds / 60, 2, 10, QLatin1Char('0')).arg(seconds % 60, 2, 10, QLatin1Char('0'));
+    };
+    m_positionLabel->setText(QStringLiteral("%1 / %2").arg(formatTime(position), formatTime(duration)));
+}
+
+void MainWindow::updateMediaDuration(qint64 duration)
+{
+    m_positionSlider->setRange(0, static_cast<int>(qMin(duration, qint64(std::numeric_limits<int>::max()))));
+    m_positionSlider->setEnabled(duration > 0);
+    updatePlaybackPosition(m_player->position());
+}
+
+void MainWindow::updatePlaybackState()
+{
+    if (m_player->playbackState() == QMediaPlayer::PlayingState)
+        statusBar()->showMessage(QStringLiteral("Reproduciendo: %1").arg(m_currentMediaName));
+    else if (m_player->playbackState() == QMediaPlayer::PausedState)
+        statusBar()->showMessage(QStringLiteral("En pausa: %1").arg(m_currentMediaName));
+    else if (!m_currentMediaName.isEmpty())
+        statusBar()->showMessage(QStringLiteral("Detenido: %1").arg(m_currentMediaName));
+}
+
+void MainWindow::showPlaybackError()
+{
+    const QString reason = m_player->errorString().isEmpty()
+        ? QStringLiteral("Formato, códec o acceso al archivo no compatible.")
+        : m_player->errorString();
+    const QString message = QStringLiteral("No se pudo reproducir %1.\n%2").arg(m_currentMediaName, reason);
+    m_previewStatus->setText(message);
+    m_previewStatus->show();
+    statusBar()->showMessage(message, 10000);
 }

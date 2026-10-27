@@ -11,11 +11,11 @@ class TimelineWidget final : public QWidget
 
 public:
     explicit TimelineWidget(QWidget *parent = nullptr);
-    void addClip(const QString &name, bool audio);
+    void addClip(const QString &name, const QString &sourcePath, bool audio);
     void setZoom(int percent);
 
 signals:
-    void selectionChanged(const QString &name, const QString &trackType);
+    void selectionChanged(const QString &name, const QString &sourcePath, const QString &trackType);
 
 protected:
     void paintEvent(QPaintEvent *event) override;
@@ -24,6 +24,7 @@ protected:
 private:
     struct Clip {
         QString name;
+        QString sourcePath;
         int track = 0;
         int start = 0;
         int width = 180;

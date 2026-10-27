@@ -18,7 +18,7 @@ TimelineWidget::TimelineWidget(QWidget *parent) : QWidget(parent)
     setMouseTracking(true);
 }
 
-void TimelineWidget::addClip(const QString &name, bool audio)
+void TimelineWidget::addClip(const QString &name, const QString &sourcePath, bool audio)
 {
     const int track = audio ? 2 : 0;
     int start = 12;
@@ -26,7 +26,7 @@ void TimelineWidget::addClip(const QString &name, bool audio)
         if (clip.track == track)
             start = std::max(start, clip.start + clip.width + 12);
     }
-    m_clips.append({name, track, start, 190});
+    m_clips.append({name, sourcePath, track, start, 190});
     update();
 }
 
@@ -92,7 +92,8 @@ void TimelineWidget::mousePressEvent(QMouseEvent *event)
                            clip.width * m_zoom / 100, trackHeight - 18);
         if (bounds.contains(event->pos())) {
             m_selected = i;
-            emit selectionChanged(clip.name, clip.track < 2 ? QStringLiteral("Vídeo") : QStringLiteral("Audio"));
+            emit selectionChanged(clip.name, clip.sourcePath,
+                                  clip.track < 2 ? QStringLiteral("Vídeo") : QStringLiteral("Audio"));
             break;
         }
     }
